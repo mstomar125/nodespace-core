@@ -11,22 +11,28 @@
     green      — CONNECTED
     red        — ERROR
 
-  Click is reserved for the sign-in dialog (chunk 4) — left inert
-  here so this commit stays scoped.
+  Click: when the daemon is signed out (DISCONNECTED, AUTH_REQUIRED,
+  UNSPECIFIED, ERROR), clicking triggers the PKCE flow via
+  `pro_initiate_oauth`. The daemon opens the browser; this UI just
+  watches `sync:status` for the resulting transitions.
 -->
 
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { proSync, type SyncState } from '$lib/stores/pro-sync.svelte';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('ProSyncPill');
 
   const labels: Record<SyncState, string> = {
-    'unspecified': 'Sync',
+    'unspecified': 'Sign in',
     'disconnected': 'Sign in',
     'connecting': 'Connecting…',
     'authenticating': 'Signing in…',
     'auth-required': 'Sign in required',
     'syncing': 'Syncing…',
     'connected': 'Synced',
-    'error': 'Sync error',
+    'error': 'Retry sign-in',
   };
 
   const tones: Record<SyncState, string> = {
@@ -39,15 +45,48 @@
     'connected': 'green',
     'error': 'red',
   };
+
+  // States where clicking should kick off a fresh sign-in attempt.
+  const SIGN_IN_STATES: SyncState[] = [
+    'unspecified',
+    'disconnected',
+    'auth-required',
+    'error',
+  ];
+
+  // While an InitiateOAuth call is in flight, disable the pill so a
+  // double-click doesn't spawn two browser windows.
+  let pending = $state(false);
+
+  async function onClick() {
+    if (pending) return;
+    if (!SIGN_IN_STATES.includes(proSync.state)) return;
+    pending = true;
+    try {
+      const attemptId = await invoke<string>('pro_initiate_oauth', {
+        // workerUrl + userHint omitted — backend defaults apply.
+      });
+      log.info('PKCE attempt started', { attemptId });
+    } catch (e) {
+      log.warn('pro_initiate_oauth failed', { error: e });
+    } finally {
+      pending = false;
+    }
+  }
+
+  let clickable = $derived(SIGN_IN_STATES.includes(proSync.state));
 </script>
 
 {#if proSync.isPro}
   <button
     class="pro-sync-pill"
+    class:clickable
     data-tone={tones[proSync.state]}
     title={proSync.detail || labels[proSync.state]}
     type="button"
     aria-label="NodeSpace Pro sync status: {labels[proSync.state]}"
+    disabled={pending || !clickable}
+    onclick={onClick}
   >
     <span class="dot" aria-hidden="true"></span>
     <span class="label">{labels[proSync.state]}</span>
@@ -70,8 +109,17 @@
     cursor: pointer;
   }
 
-  .pro-sync-pill:hover {
+  .pro-sync-pill:hover:not(:disabled) {
     background: var(--surface-2, #f3f4f6);
+  }
+
+  .pro-sync-pill:disabled {
+    cursor: default;
+    opacity: 0.85;
+  }
+
+  .pro-sync-pill:not(.clickable) {
+    cursor: default;
   }
 
   .dot {

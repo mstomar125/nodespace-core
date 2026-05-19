@@ -590,6 +590,7 @@ pub fn run() {
             toggle_sidebar,
             commands::pro_sync::pro_tier,
             commands::pro_sync::pro_subscribe_sync_status,
+            commands::pro_sync::pro_initiate_oauth,
             commands::embeddings::generate_root_embedding,
             commands::embeddings::search_roots,
             commands::embeddings::update_root_embedding,

@@ -9,8 +9,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::services::pro_client::pb::WatchSyncStatusRequest;
+use crate::services::pro_client::pb::{InitiateOAuthRequest, WatchSyncStatusRequest};
 use crate::services::{ProClient, ProTier};
+
+/// Default cloud-worker URL when the frontend doesn't supply one.
+/// Matches `nodespace-sync/cloud-worker`'s default bind
+/// (`127.0.0.1:8787`); override via the optional `worker_url` arg.
+const DEFAULT_WORKER_URL: &str = "http://127.0.0.1:8787";
 
 /// Flag tracking whether the status-stream task is already running.
 /// Module-level so repeated calls to `pro_subscribe_sync_status` from
@@ -86,4 +91,36 @@ pub async fn pro_subscribe_sync_status(app: AppHandle) -> Result<(), String> {
     });
 
     Ok(())
+}
+
+/// Kick off the daemon's OAuth PKCE flow. The daemon opens the
+/// system browser and listens on a localhost callback; this command
+/// returns the attempt ID synchronously. UI tracks progress via the
+/// `sync:status` stream wired in `pro_subscribe_sync_status`.
+///
+/// `worker_url` defaults to `http://127.0.0.1:8787` (the
+/// `nodespace-sync/cloud-worker` default). `user_hint` is shown in
+/// the worker's login form so users see which account they're
+/// signing into; empty string is fine.
+#[tauri::command]
+pub async fn pro_initiate_oauth(
+    app: AppHandle,
+    worker_url: Option<String>,
+    user_hint: Option<String>,
+) -> Result<String, String> {
+    let Some(pro) = app.try_state::<ProClient>() else {
+        return Err("community tier — Pro sign-in unavailable".into());
+    };
+    let mut client = pro.client().await;
+    let req = InitiateOAuthRequest {
+        worker_url: worker_url.unwrap_or_else(|| DEFAULT_WORKER_URL.to_string()),
+        user_hint: user_hint.unwrap_or_default(),
+    };
+    tracing::info!(worker = %req.worker_url, user_hint = %req.user_hint, "Pro: InitiateOAuth");
+    let resp = client
+        .initiate_o_auth(req)
+        .await
+        .map_err(|e| format!("InitiateOAuth failed: {e}"))?
+        .into_inner();
+    Ok(resp.attempt_id)
 }
