@@ -310,6 +310,29 @@ pub fn run() {
             // Register shutdown token as managed state for background task coordination.
             app.manage(shutdown_token_for_setup.clone());
 
+            // External-daemon mode (NODESPACED_ADDR set): skip the
+            // in-process SurrealStore / NodeService / NLP / domain-
+            // event-forwarder init entirely and connect to the remote
+            // daemon for all CRUD. Used to point the Tauri app at
+            // `nodespaced-pro` for Pro-tier sync (nodespace-sync #44).
+            if let Ok(external_addr) = std::env::var("NODESPACED_ADDR") {
+                let app_handle = app.handle().clone();
+                tracing::info!(
+                    addr = %external_addr,
+                    "NODESPACED_ADDR set — skipping in-process service init"
+                );
+                tauri::async_runtime::block_on(async {
+                    match crate::services::GrpcClient::start_external(&external_addr).await {
+                        Ok(client) => {
+                            app_handle.manage(client);
+                            tracing::info!("External gRPC client registered");
+                        }
+                        Err(e) => {
+                            panic!("Failed to connect to external nodespaced at {external_addr}: {e}");
+                        }
+                    }
+                });
+            } else
             // Initialize database and all services at startup.
             {
                 use nodespace_core::services::{

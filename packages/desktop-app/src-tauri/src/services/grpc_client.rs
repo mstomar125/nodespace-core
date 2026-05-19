@@ -78,6 +78,51 @@ impl GrpcClient {
         })
     }
 
+    /// Connect to an **external** nodespaced over TCP. Used when the
+    /// Tauri app is launched with `NODESPACED_ADDR` set — typically
+    /// pointing at `nodespaced-pro` (from the private `nodespace-sync`
+    /// repo) so the Pro `CloudSyncService` is reachable alongside the
+    /// standard `NodeService`.
+    ///
+    /// In external mode no in-process server is spawned. The caller
+    /// is expected to also skip the embedded `SurrealStore`,
+    /// `NodeService`, and embedding-pipeline init, since the remote
+    /// daemon owns those.
+    ///
+    /// `addr` accepts both bare `host:port` and full URL forms
+    /// (`http://host:port`, `https://host:port`).
+    pub async fn start_external(addr: &str) -> Result<Self, GrpcClientError> {
+        let normalized = if addr.starts_with("http://") || addr.starts_with("https://") {
+            addr.to_string()
+        } else {
+            format!("http://{addr}")
+        };
+        tracing::info!(target_addr = %normalized, "Connecting to external nodespaced");
+
+        let endpoint = Endpoint::from_shared(normalized.clone())
+            .map_err(|e| GrpcClientError::InvalidEndpoint(e.to_string()))?
+            .connect_timeout(CONNECT_TIMEOUT);
+        let channel = endpoint.connect().await.map_err(GrpcClientError::Connect)?;
+
+        // External daemons are assumed to expose the full Tauri
+        // service surface. Daemons that don't implement a given RPC
+        // return `Status::Unimplemented` at call time — the right
+        // surfacing for missing services (e.g., `nodespaced-pro` not
+        // having LocalAgent yet).
+        let inner = GrpcClientInner {
+            node: NodeServiceClient::new(channel.clone()),
+            import: ImportServiceClient::new(channel.clone()),
+            settings: SettingsServiceClient::new(channel.clone()),
+            embeddings: Some(EmbeddingsServiceClient::new(channel.clone())),
+            agent_session: AgentSessionServiceClient::new(channel.clone()),
+            local_agent: LocalAgentServiceClient::new(channel),
+        };
+        tracing::info!(target_addr = %normalized, "External nodespaced client connected");
+        Ok(Self {
+            inner: Arc::new(RwLock::new(inner)),
+        })
+    }
+
     /// Core server-start logic.
     async fn start_server(
         node_service: Arc<NodeService>,
