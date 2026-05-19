@@ -313,8 +313,10 @@ pub fn run() {
             // External-daemon mode (NODESPACED_ADDR set): skip the
             // in-process SurrealStore / NodeService / NLP / domain-
             // event-forwarder init entirely and connect to the remote
-            // daemon for all CRUD. Used to point the Tauri app at
-            // `nodespaced-pro` for Pro-tier sync (nodespace-sync #44).
+            // daemon for all CRUD. Also probe for the Pro
+            // CloudSyncService and emit `pro:tier-detected` so the
+            // frontend can render the sync pill + sign-in button
+            // only when warranted (nodespace-sync #44).
             if let Ok(external_addr) = std::env::var("NODESPACED_ADDR") {
                 let app_handle = app.handle().clone();
                 tracing::info!(
@@ -329,6 +331,35 @@ pub fn run() {
                         }
                         Err(e) => {
                             panic!("Failed to connect to external nodespaced at {external_addr}: {e}");
+                        }
+                    }
+
+                    match crate::services::ProClient::connect_and_probe(&external_addr).await {
+                        Ok(pro) => {
+                            use tauri::Emitter;
+                            let tier = pro.tier().await;
+                            let last_status = pro.last_status().await;
+                            app_handle.manage(pro);
+                            let payload = serde_json::json!({
+                                "tier": tier,
+                                "addr": external_addr,
+                                "initial_status": last_status.as_ref().map(|s| serde_json::json!({
+                                    "state": s.state,
+                                    "detail": s.detail,
+                                })),
+                            });
+                            if let Err(e) =
+                                app_handle.emit("pro:tier-detected", payload)
+                            {
+                                tracing::warn!(error = %e, "failed to emit pro:tier-detected");
+                            }
+                            tracing::info!(?tier, "Pro capability probe done");
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Pro capability probe failed — assuming community tier"
+                            );
                         }
                     }
                 });
