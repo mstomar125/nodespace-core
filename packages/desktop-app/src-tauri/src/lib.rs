@@ -357,6 +357,20 @@ pub fn run() {
                     app_handle.manage(grpc);
                     tracing::info!("External gRPC client registered");
 
+                    // Replace the in-process DomainEventForwarder for
+                    // external-daemon mode: subscribe to the daemon's
+                    // NodeService.WatchNodes stream and re-emit each
+                    // event as the same Tauri events the frontend
+                    // already listens for. Without this, the frontend
+                    // sees its own writes (round-trip) but never
+                    // sees cloud-pulled changes — the Pro demo's
+                    // bob window stays blank when alice creates a
+                    // node.
+                    crate::services::external_event_forwarder::spawn(
+                        app_handle.clone(),
+                        channel.clone(),
+                    );
+
                     let pro = crate::services::ProClient::probe_on_channel(channel).await;
                     use tauri::Emitter;
                     let tier = pro.tier().await;

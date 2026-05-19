@@ -1,4 +1,5 @@
 pub mod domain_event_forwarder;
+pub mod external_event_forwarder;
 pub mod grpc_client;
 pub mod pro_client;
 

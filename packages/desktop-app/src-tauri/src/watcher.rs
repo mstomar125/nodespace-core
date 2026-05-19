@@ -197,5 +197,16 @@ fn forward(app: &AppHandle, event: nodespace_daemon::nodespace::NodeEvent) {
                 error!("Failed to emit node:deleted for {}: {e}", d.node_id);
             }
         }
+        // Relationship variants were added so external-daemon mode
+        // can reconstruct the hierarchy tree. This watcher path
+        // (Unix-domain-socket nodespaced) doesn't need them yet — the
+        // in-process DomainEventForwarder owns relationship
+        // forwarding when this binary is the consumer. Drop them
+        // here so the match is exhaustive.
+        NodeEventKind::RelationshipCreated(_)
+        | NodeEventKind::RelationshipUpdated(_)
+        | NodeEventKind::RelationshipDeleted(_) => {
+            debug!("RelationshipEvent on UDS watcher: ignored (not forwarded by this path)");
+        }
     }
 }
