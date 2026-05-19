@@ -94,7 +94,7 @@ class ProSyncStore {
       tier: ProTier;
       addr: string;
       initial_status: { state: number; detail: string } | null;
-    }>('pro:tier-detected', (event) => {
+    }>('pro:tier-detected', async (event) => {
       const p = event.payload;
       log.info('tier detected', { tier: p.tier, addr: p.addr });
       this.tier = p.tier;
@@ -102,6 +102,18 @@ class ProSyncStore {
       if (p.initial_status) {
         this.state = decodeState(p.initial_status.state);
         this.detail = p.initial_status.detail;
+      }
+      // The first pro_subscribe_sync_status invoke below races the
+      // backend's async init (Tauri setup spawns the connect on the
+      // runtime and returns immediately). If ProClient wasn't yet in
+      // managed state at first invoke, the command no-op'd. Re-invoke
+      // now that we know ProClient is ready — backend is idempotent.
+      if (p.tier === 'pro') {
+        try {
+          await invoke('pro_subscribe_sync_status');
+        } catch (e) {
+          log.warn('pro_subscribe_sync_status (post-tier) failed', { error: e });
+        }
       }
     });
 

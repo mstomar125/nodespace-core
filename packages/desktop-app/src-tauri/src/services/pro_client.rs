@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::RwLock;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 
 /// Generated bindings for `nodespace.pro.v1`. The proto file lives
 /// under `proto/nodespace_pro.proto` in this crate (vendored from
@@ -29,7 +29,6 @@ use pb::sync_status_event::State as PbState;
 use pb::{SyncStatusEvent, WatchSyncStatusRequest};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Pro-tier client + tier-detection state.
 #[derive(Clone)]
@@ -56,35 +55,23 @@ pub enum ProTier {
 }
 
 impl ProClient {
-    /// Connect to the same daemon `GrpcClient` connects to, then
-    /// probe for the Pro service. The returned client is always
-    /// constructable — its `tier()` tells callers whether to surface
-    /// Pro UI.
-    pub async fn connect_and_probe(addr: &str) -> Result<Self, ProClientError> {
-        let normalized = if addr.starts_with("http://") || addr.starts_with("https://") {
-            addr.to_string()
-        } else {
-            format!("http://{addr}")
-        };
-        let endpoint = Endpoint::from_shared(normalized.clone())
-            .map_err(|e| ProClientError::InvalidEndpoint(e.to_string()))?
-            .connect_timeout(CONNECT_TIMEOUT);
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| ProClientError::Connect(e.to_string()))?;
-
+    /// Probe for the Pro service on an existing channel. The channel
+    /// is shared with `GrpcClient` so both service surfaces ride the
+    /// same h2 connection — opening a parallel channel here caused
+    /// "Service was not ready: transport error" on subsequent calls
+    /// after the probe stream was dropped.
+    pub async fn probe_on_channel(channel: Channel) -> Self {
         let mut client = CloudSyncServiceClient::new(channel);
         let (tier, last_status) = probe(&mut client).await;
-        tracing::info!(target_addr = %normalized, ?tier, "Pro capability probe complete");
+        tracing::info!(?tier, "Pro capability probe complete");
 
-        Ok(Self {
+        Self {
             inner: Arc::new(RwLock::new(ProClientInner {
                 client,
                 tier,
                 last_status,
             })),
-        })
+        }
     }
 
     pub async fn tier(&self) -> ProTier {
@@ -100,19 +87,9 @@ impl ProClient {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ProClientError {
-    #[error("invalid endpoint URL: {0}")]
-    InvalidEndpoint(String),
-    #[error("transport connect failed: {0}")]
-    Connect(String),
-}
-
 /// Single-shot probe of `WatchSyncStatus`. Returns the detected tier
 /// and the first event if one arrives within the timeout.
-async fn probe(
-    client: &mut CloudSyncServiceClient<Channel>,
-) -> (ProTier, Option<SyncStatusEvent>) {
+async fn probe(client: &mut CloudSyncServiceClient<Channel>) -> (ProTier, Option<SyncStatusEvent>) {
     let probe_call = async {
         let stream = client
             .watch_sync_status(WatchSyncStatusRequest {})
@@ -121,23 +98,22 @@ async fn probe(
         Ok::<_, tonic::Status>(stream)
     };
 
-    let stream_result =
-        match tokio::time::timeout(PROBE_TIMEOUT, probe_call).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(status)) => {
-                return if status.code() == tonic::Code::Unimplemented {
-                    tracing::info!("CloudSyncService unimplemented — community tier");
-                    (ProTier::Community, None)
-                } else {
-                    tracing::warn!(error = %status, "Pro probe returned error");
-                    (ProTier::Unknown, None)
-                };
-            }
-            Err(_) => {
-                tracing::warn!("Pro probe timed out — treating as community");
-                return (ProTier::Unknown, None);
-            }
-        };
+    let stream_result = match tokio::time::timeout(PROBE_TIMEOUT, probe_call).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(status)) => {
+            return if status.code() == tonic::Code::Unimplemented {
+                tracing::info!("CloudSyncService unimplemented — community tier");
+                (ProTier::Community, None)
+            } else {
+                tracing::warn!(error = %status, "Pro probe returned error");
+                (ProTier::Unknown, None)
+            };
+        }
+        Err(_) => {
+            tracing::warn!("Pro probe timed out — treating as community");
+            return (ProTier::Unknown, None);
+        }
+    };
 
     // Pull the first event so the UI gets the current snapshot
     // immediately instead of waiting for the next transition.

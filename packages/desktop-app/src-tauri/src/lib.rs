@@ -317,51 +317,65 @@ pub fn run() {
             // CloudSyncService and emit `pro:tier-detected` so the
             // frontend can render the sync pill + sign-in button
             // only when warranted (nodespace-sync #44).
+            //
+            // The connect is dispatched onto Tauri's async runtime via
+            // `async_runtime::spawn` (NOT a one-shot thread runtime —
+            // tonic's `Channel` keeps a background task on the
+            // runtime that owns it, so a runtime drop ends the
+            // connection). Setup returns before the task completes;
+            // the frontend listens for `pro:tier-detected` and the
+            // commands (`pro_tier`, `pro_subscribe_sync_status`,
+            // `pro_initiate_oauth`) resolve `try_state` per call so a
+            // pre-init invoke just returns the community fallback —
+            // the post-init event triggers a re-subscribe in the
+            // store.
             if let Ok(external_addr) = std::env::var("NODESPACED_ADDR") {
                 let app_handle = app.handle().clone();
+                let addr = external_addr.clone();
                 tracing::info!(
                     addr = %external_addr,
                     "NODESPACED_ADDR set — skipping in-process service init"
                 );
-                tauri::async_runtime::block_on(async {
-                    match crate::services::GrpcClient::start_external(&external_addr).await {
-                        Ok(client) => {
-                            app_handle.manage(client);
-                            tracing::info!("External gRPC client registered");
-                        }
-                        Err(e) => {
-                            panic!("Failed to connect to external nodespaced at {external_addr}: {e}");
-                        }
-                    }
 
-                    match crate::services::ProClient::connect_and_probe(&external_addr).await {
-                        Ok(pro) => {
-                            use tauri::Emitter;
-                            let tier = pro.tier().await;
-                            let last_status = pro.last_status().await;
-                            app_handle.manage(pro);
-                            let payload = serde_json::json!({
-                                "tier": tier,
-                                "addr": external_addr,
-                                "initial_status": last_status.as_ref().map(|s| serde_json::json!({
-                                    "state": s.state,
-                                    "detail": s.detail,
-                                })),
-                            });
-                            if let Err(e) =
-                                app_handle.emit("pro:tier-detected", payload)
-                            {
-                                tracing::warn!(error = %e, "failed to emit pro:tier-detected");
-                            }
-                            tracing::info!(?tier, "Pro capability probe done");
-                        }
+                // Title each window with the daemon it dials so the
+                // two-window demo is visually distinguishable. Falls
+                // back to the addr if NODESPACED_USER isn't set.
+                let label = std::env::var("NODESPACED_USER").unwrap_or_else(|_| addr.clone());
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_title(&format!("NodeSpace — {label}"));
+                }
+
+                tauri::async_runtime::spawn(async move {
+                    let grpc = match crate::services::GrpcClient::start_external(&addr).await {
+                        Ok(c) => c,
                         Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Pro capability probe failed — assuming community tier"
-                            );
+                            tracing::error!(error = %e, addr = %addr, "external grpc connect failed");
+                            return;
                         }
+                    };
+                    let channel = grpc.channel().await;
+                    app_handle.manage(grpc);
+                    tracing::info!("External gRPC client registered");
+
+                    let pro = crate::services::ProClient::probe_on_channel(channel).await;
+                    use tauri::Emitter;
+                    let tier = pro.tier().await;
+                    let last_status = pro.last_status().await;
+                    let payload = serde_json::json!({
+                        "tier": tier,
+                        "addr": addr,
+                        "initial_status": last_status.as_ref().map(|s| {
+                            serde_json::json!({
+                                "state": s.state,
+                                "detail": s.detail,
+                            })
+                        }),
+                    });
+                    app_handle.manage(pro);
+                    if let Err(e) = app_handle.emit("pro:tier-detected", payload) {
+                        tracing::warn!(error = %e, "failed to emit pro:tier-detected");
                     }
+                    tracing::info!(?tier, "Pro capability probe done");
                 });
             } else
             // Initialize database and all services at startup.

@@ -50,6 +50,7 @@ struct GrpcClientInner {
     embeddings: Option<EmbeddingsServiceClient<Channel>>,
     agent_session: AgentSessionServiceClient<Channel>,
     local_agent: LocalAgentServiceClient<Channel>,
+    channel: Channel,
 }
 
 /// Managed Tauri state wrapping the gRPC clients.
@@ -115,7 +116,8 @@ impl GrpcClient {
             settings: SettingsServiceClient::new(channel.clone()),
             embeddings: Some(EmbeddingsServiceClient::new(channel.clone())),
             agent_session: AgentSessionServiceClient::new(channel.clone()),
-            local_agent: LocalAgentServiceClient::new(channel),
+            local_agent: LocalAgentServiceClient::new(channel.clone()),
+            channel,
         };
         tracing::info!(target_addr = %normalized, "External nodespaced client connected");
         Ok(Self {
@@ -211,7 +213,8 @@ impl GrpcClient {
             settings: SettingsServiceClient::new(channel.clone()),
             embeddings: embeddings_client,
             agent_session: AgentSessionServiceClient::new(channel.clone()),
-            local_agent: LocalAgentServiceClient::new(channel),
+            local_agent: LocalAgentServiceClient::new(channel.clone()),
+            channel,
         })
     }
 
@@ -243,6 +246,15 @@ impl GrpcClient {
     /// Borrow a clone of the `LocalAgentServiceClient`.
     pub async fn local_agent_client(&self) -> LocalAgentServiceClient<Channel> {
         self.inner.read().await.local_agent.clone()
+    }
+
+    /// Clone of the underlying `tonic::transport::Channel`. Used by
+    /// `ProClient` so the Pro-tier service shares the same connection
+    /// (and its long-lived h2 task) instead of opening a parallel
+    /// channel that gets into "Service was not ready" after the first
+    /// streaming call.
+    pub async fn channel(&self) -> Channel {
+        self.inner.read().await.channel.clone()
     }
 }
 
