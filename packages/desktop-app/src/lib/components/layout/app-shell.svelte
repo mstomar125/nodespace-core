@@ -5,6 +5,8 @@
   import NavigationSidebar from './navigation-sidebar.svelte';
   import PaneManager from './pane-manager.svelte';
   import StatusBar from '$lib/components/status-bar.svelte';
+  import ProSyncPill from '$lib/components/pro-sync-pill.svelte';
+  import { proSync } from '$lib/stores/pro-sync.svelte';
   import { importService } from '$lib/services/import-service';
   import { statusBar } from '$lib/stores/status-bar';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
@@ -133,6 +135,18 @@
   // Initialize theme system and menu event listeners
   onMount(() => {
     const cleanup = initializeTheme();
+
+    // Pro-tier sync listener. No-op outside Tauri and in community
+    // mode; the pill component returns null unless `isPro`.
+    let cleanupProSync: (() => void) | null = null;
+    if (
+      typeof window !== 'undefined' &&
+      (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
+    ) {
+      proSync.start().then((stop) => (cleanupProSync = stop)).catch((e) => {
+        log.warn('proSync.start failed', { error: e });
+      });
+    }
 
     // Load persisted tab state from storage
     const stateLoaded = loadPersistedState();
@@ -442,6 +456,7 @@
       TabPersistenceService.flush();
 
       cleanup?.();
+      cleanupProSync?.();
       if (unlistenMenu) {
         (await unlistenMenu)();
       }
@@ -514,6 +529,13 @@
           <!-- PaneManager now renders content directly via PaneContent components -->
           <PaneManager />
         </div>
+
+        <!-- Pro-tier sync pill (renders only when daemon answers
+             nodespace.pro.v1.CloudSyncService — community mode hides
+             it entirely). Floats top-right inside the app shell. -->
+        <div class="pro-sync-pill-slot">
+          <ProSyncPill />
+        </div>
       </div>
 
       <!-- Status Bar - shows import progress, etc. (pushes content up, not overlay) -->
@@ -543,6 +565,15 @@
     flex: 1;
     min-height: 0;
     overflow: hidden;
+    position: relative; /* anchor for .pro-sync-pill-slot */
+  }
+
+  .pro-sync-pill-slot {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    z-index: 10;
+    pointer-events: auto;
   }
 
   /* Navigation Sidebar */

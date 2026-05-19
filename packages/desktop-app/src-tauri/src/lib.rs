@@ -588,6 +588,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             toggle_sidebar,
+            commands::pro_sync::pro_tier,
+            commands::pro_sync::pro_subscribe_sync_status,
             commands::embeddings::generate_root_embedding,
             commands::embeddings::search_roots,
             commands::embeddings::update_root_embedding,
